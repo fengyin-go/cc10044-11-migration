@@ -78,6 +78,9 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
         {"id": 4, "status": "已断裂", "pending": False, "abnormal": True,
          "目标表": "report_monthly_finance", "来源表列表": "legacy_gl_journal, dim_fiscal_period",
          "转换逻辑": "财务月报汇总", "中间层级": "报表", "血缘深度": "2"},
+        {"id": 5, "status": "已建立", "pending": False, "abnormal": False,
+         "目标表": "rpt_orders_daily_combo", "来源表列表": "ods_orders, dwd_orders_clean",
+         "转换逻辑": "订单组合日报：ODS明细关联DWD清洗结果", "中间层级": "报表", "血缘深度": "2"},
     ],
     "backfill_task": [
         {"id": 1, "status": "运行中", "pending": True, "abnormal": False,
@@ -174,9 +177,10 @@ SEED_ROWS: dict[str, list[dict[str, Any]]] = {
          "输入表": "inventory_raw", "输出表": "inventory_daily", "依赖关系": ""},
     ],
     "data_migration": [
-        {"id": 1, "status": "待迁", "pending": True, "abnormal": False,
+        {"id": 1, "status": "迁移中", "pending": True, "abnormal": False,
          "任务名称": "Hive到Iceberg订单迁移", "源存储": "Hive", "目标存储": "Iceberg",
-         "迁移范围": "ods_orders,dwd_orders_clean", "校验方式": "行数+校验和+分区完整性"},
+         "迁移范围": "ods_orders,dwd_orders_clean", "校验方式": "行数+校验和+分区完整性",
+         "服务读路径": "Hive存量"},
         {"id": 2, "status": "已校验", "pending": False, "abnormal": False,
          "任务名称": "MySQL到ClickHouse实时同步", "源存储": "MySQL", "目标存储": "ClickHouse",
          "迁移范围": "dws_sales_daily", "校验方式": "行数+校验和"},

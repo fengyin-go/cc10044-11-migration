@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.migration_registry import migration_registry
 from app.store import store
 
 
@@ -19,6 +20,83 @@ class LineageGraphService(BaseModuleService):
     STATUS_ORDER = ["已建立", "待验证", "已断裂"]
     ACTION_RULES = {"刷新血缘": "已建立", "标记断裂": "已断裂"}
     NEGATIVE_ACTIONS = []
+
+    # ---- 迁移取数地址解析 ---------------------------------------------
+
+    def fetch_address(self, table: str) -> dict[str, Any]:
+        """单表取数地址：按经过核验的表分区映射解析。
+
+        迁移上线（读路径切到 Iceberg）后返回核验通过的 Iceberg 分区地址；
+        未切换或整表未核验通过时返回 Hive 存量分区地址，保证旧库读路径可用。
+        """
+        batch = migration_registry.batch_for_table(table)
+        if batch is None:
+            return {
+                "ok": False,
+                "table": table,
+                "mapped": False,
+                "message": f"表 {table} 未登记迁移分区映射，按原生路径取数",
+            }
+        resolved = migration_registry.resolve_table_address(batch, table)
+        return {
+            "ok": True,
+            "table": table,
+            "batch_id": batch["batch_id"],
+            "read_mode": batch["read_mode"],
+            **resolved,
+        }
+
+    def joint_fetch_address(
+        self, tables: list[str] | None = None, report: str | None = None
+    ) -> dict[str, Any]:
+        """联合取数地址：同一结果的全部输入地址来自一套完整可读的数据。
+
+        可以显式传表清单，也可以传组合报表名（沿该报表已建立的血缘解析
+        上游表）。任一输入表未就绪时，全部输入统一回退 Hive 存量分区，
+        不允许同一结果混用两个引擎的地址。
+        """
+        if report:
+            entry = next(
+                (e for e in store.rows(self.MODULE)
+                 if e.get("目标表") == report and e.get("status") == "已建立"),
+                None,
+            )
+            if entry is None:
+                return {"ok": False, "message": f"组合报表 {report} 没有已建立的血缘关系"}
+            tables = [s.strip() for s in entry.get("来源表列表", "").split(",") if s.strip()]
+        tables = [t for t in (tables or []) if t]
+        if not tables:
+            return {"ok": False, "message": "请提供至少一张取数表或一个组合报表名"}
+
+        resolved_batches: dict[int, dict[str, Any]] = {}
+        unmapped: list[str] = []
+        for table in tables:
+            batch = migration_registry.batch_for_table(table)
+            if batch is None:
+                unmapped.append(table)
+            else:
+                resolved_batches[id(batch)] = batch
+        if unmapped:
+            return {
+                "ok": False,
+                "message": f"表 {','.join(unmapped)} 未登记迁移分区映射，无法联合解析",
+                "unmapped_tables": unmapped,
+            }
+
+        if len(resolved_batches) > 1:
+            return {"ok": False, "message": "输入表分属不同迁移批次，无法保证同一套数据"}
+        batch = next(iter(resolved_batches.values()))
+        joint = migration_registry.resolve_joint_address(batch, tables)
+        return {
+            "ok": True,
+            "report": report,
+            "tables": joint["tables"],
+            "engine": joint["engine"],
+            "consistent": joint["consistent"],
+            "read_mode": batch["read_mode"],
+            "batch_id": batch["batch_id"],
+            "message": joint["note"],
+        }
 
     def trace_upstream(self, target_table: str, max_depth: int = 5) -> dict[str, Any]:
         """从目标表向上追溯所有上游来源表和转换链路。

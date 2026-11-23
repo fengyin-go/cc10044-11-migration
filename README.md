@@ -15,10 +15,12 @@
 │   ├── src/api/              统一请求封装
 │   └── vite.config.ts        dev server 配置（open: false）
 ├── backend/                  FastAPI（Python） 后端
-│   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
-│   ├── app/services/<key>.py    每个模块独立领域逻辑
-│   ├── app/services/base.py     共享服务骨架
+│   ├── app/routers/resource.py      通用查询/导出/登记/动作接口
+│   ├── app/routers/migration_ops.py 迁移上线与血缘取数接口
+│   ├── app/services/<key>.py        每个模块独立领域逻辑
+│   ├── app/services/migration_registry.py  Hive→Iceberg 表分区映射登记表
 │   └── app/store.py          内存数据仓库与示例数据
+├── scripts/verify_migration_workflow.py  迁移上线运行手册端到端核验
 ├── .gitignore
 └── docker-compose.yml
 ```
@@ -78,6 +80,30 @@ npm run dev
   `frontend/src/domain/<模块>.ts`，用于承载真实业务差异并维持36题位容量。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## Hive→Iceberg 迁移上线
+
+`data_migration` 任务 1（Hive到Iceberg订单迁移，批次 MB-2026-11-21-orders）登记了
+`ods_orders` 与 `dwd_orders_clean` 的表分区映射：每行含 Hive/Iceberg 双侧地址、
+实际行数、核验状态和 Iceberg 目标数据版本（snapshot id）。切换前取数走 Hive
+存量读路径；组合报表 `rpt_orders_daily_combo` 沿血缘联合解析两张表。
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/data_migration/{id}/partition-map` | 查看批次表分区映射与读路径状态 |
+| `POST /api/data_migration/{id}/verify` `{table}` | 核验/重验单表，比对结果标清表和目标版本 |
+| `POST /api/data_migration/{id}/backfill` `{table, partition}` | 补迁缺失或不符分区，补后待核验 |
+| `POST /api/data_migration/{id}/switch` | 全批次核验通过后切换 Iceberg 读路径 |
+| `POST /api/data_migration/{id}/rollback` | 回滚 Hive 存量读路径，保留 Iceberg 核验记录 |
+| `GET /api/lineage_graph/fetch-address?table=...` | 单表血缘取数地址 |
+| `GET /api/lineage_graph/joint-fetch-address?tables=...&report=...` | 联合取数地址，同一结果的输入来自一套完整可读数据 |
+
+规约：漏一日或核验不符的表不能当作已迁完，未整表核验通过禁止切换；联合取数
+时任一表未就绪则全部输入统一回退 Hive 存量分区。运行手册端到端核验：
+
+```bash
+python3 scripts/verify_migration_workflow.py
+```
 
 领域：数据工程
 子方向：数仓与数据湖
